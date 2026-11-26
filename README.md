@@ -2,6 +2,8 @@
 
 一个独立的通用 DSH 船员士气插件，与海洋背景插件完全解耦。界面全程不展示任何士气条或数值，仅通过 `dsh:status-text:override` 事件向 `dsh-rotate-status-text` 投递吐槽或低谷抗议，并通过 `/rum` 官方命令恢复士气与派发 `dsh:confetti` 事件。
 
+此包是 [`dsh-pirate-mode`](https://github.com/butterfly301/dsh-pirate-mode) 的组件，也可以单独安装使用。
+
 ## 独立安装与配置
 
 ```bash
