@@ -1,6 +1,6 @@
 {
   "name": "dsh-crew-morale",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Per-session crew morale state machine expressed purely through status-bar text overrides and a /rum command that dispatches a confetti event.",
   "license": "MIT",
@@ -36,6 +36,7 @@
     "test": "node --test \"test/*.test.js\""
   },
   "files": [
+    "cordis.patch.yml",
     "index.js",
     "client.js",
     "host",
@@ -53,6 +54,9 @@
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-api-session-controller"
       ]
+    },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
     }
   }
 }

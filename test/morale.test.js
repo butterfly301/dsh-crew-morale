@@ -241,3 +241,39 @@ test('client transitions from loading to ready, dispatches localized notices wit
 
   cleanup?.();
 });
+
+test('historical end notices do not surface when an old session is opened', () => {
+  const engine = createMoraleEngine({
+    initial: 100,
+    retryDelta: -4,
+    failedDelta: -12,
+    cancelledDelta: -3,
+    lowThreshold: 30,
+    rumTarget: 100,
+  });
+  const session = makeSession([
+    { type: 'turn/start', time: 1000 },
+    { type: 'turn/end', time: 2000, data: { reason: { kind: 'error' } } },
+    { type: 'turn/start', time: 3000 },
+  ]);
+  const state = engine.readState('old', session, 0, 100000);
+  assert.equal(state.notice, null);
+  assert.equal(engine.snapshotScore('old'), 88);
+});
+
+test('live session events update existing entries without refolding history', () => {
+  const engine = createMoraleEngine({
+    initial: 100,
+    retryDelta: -4,
+    failedDelta: -12,
+    cancelledDelta: -3,
+    lowThreshold: 30,
+    rumTarget: 100,
+  });
+  engine.readState('s', makeSession([{ type: 'turn/start', time: 1000 }]), 0, 2000);
+  engine.applyEvent('s', { type: 'turn/end', data: { reason: { kind: 'error' } }, time: 3000 }, 3000);
+  assert.equal(engine.snapshotScore('s'), 88);
+  engine.applyEvent('s', { type: 'turn/start', time: 4000 }, 4000);
+  const state = engine.readState('s', null, 0, 4500);
+  assert.equal(state.notice?.kind, 'failed');
+});

@@ -14,7 +14,7 @@ function loadSchemastery() {
     if (err?.code !== 'MODULE_NOT_FOUND' || !String(err.message).includes('@deepseek-ai/schemastery')) {
       throw err;
     }
-    const chain = () => ({ default: chain, min: chain, max: chain, volatile: chain });
+    const chain = () => ({ default: chain, min: chain, max: chain, pattern: chain, volatile: chain });
     return { object: chain, string: chain, number: chain, boolean: chain, array: chain, dict: chain, union: chain, const: chain };
   }
 }
@@ -33,8 +33,8 @@ const pack = z.object({
   rumPhrases: z.dict(z.array(z.string())).default({}),
   confetti: z.object({
     colors: z.array(z.string()).default([]),
-    particleCount: z.number().default(90),
-    spread: z.number().default(75),
+    particleCount: z.number().default(0),
+    spread: z.number().default(0),
   }).default({}),
 });
 
@@ -76,7 +76,7 @@ export function pickLocalized(map, preference) {
   return '';
 }
 
-function readService(ctx, key) {
+export function readService(ctx, key) {
   try {
     if (typeof ctx?.get === 'function') return ctx.get(key);
     if (ctx?.reflect && typeof ctx.reflect.get === 'function') return ctx.reflect.get(key);
@@ -107,8 +107,13 @@ export function apply(ctx, config = {}) {
     rumTarget: unwrap(config.rumTarget),
   });
 
+  const offSessionEvent = typeof ctx.on === 'function'
+    ? ctx.on('session/event', (session, event) => engine.applyEvent(session?.id, event))
+    : undefined;
+  ctx.effect(() => () => { try { offSessionEvent?.(); } catch {} }, 'dsh-crew-morale: session events');
+
   const syncConfig = () => {
-    const saved = readSettingsDoc(ctx, 'dsh-crew-morale') || readSettingsDoc(ctx, 'crew-morale');
+    const saved = readSettingsDoc(ctx, 'dsh-crew-morale');
     engine.setConfig({
       initial: saved?.initial ?? unwrap(config.initial),
       retryDelta: saved?.retryDelta ?? unwrap(config.retryDelta),
@@ -122,7 +127,7 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => {
     const offVolatile = ctx.on?.('loader/volatile-update', syncConfig);
     const offDoc = ctx.on?.('settings/document-updated', (ns) => {
-      if (String(ns) === 'dsh-crew-morale' || String(ns) === 'crew-morale') syncConfig();
+      if (String(ns) === 'dsh-crew-morale') syncConfig();
     });
     syncConfig();
     return () => {
@@ -131,15 +136,13 @@ export function apply(ctx, config = {}) {
     };
   }, 'dsh-crew-morale: config sync');
 
-  let lastPolledSessionId = null;
-
   ctx.inject(['commands'], (scope) => scope.effect(() => {
     let unregister = null;
     let currentCmd = '';
     let currentDesc = '';
 
     const installCommand = () => {
-      const saved = readSettingsDoc(scope, 'dsh-crew-morale') || readSettingsDoc(scope, 'crew-morale');
+      const saved = readSettingsDoc(scope, 'dsh-crew-morale');
       const currentPack = saved?.pack !== undefined ? saved.pack : unwrap(config.pack);
       if (!currentPack || typeof currentPack !== 'object') {
         if (unregister) {
@@ -163,14 +166,13 @@ export function apply(ctx, config = {}) {
       currentCmd = cmdName;
       currentDesc = desc;
       const handler = async (commandCtx) => {
-        const sid = commandCtx?.sessionId
-          || commandCtx?.session?.id
-          || commandCtx?.agent?.session?.id
+        const sid = commandCtx?.agent?.id
           || commandCtx?.agent?.sessionId
-          || lastPolledSessionId
+          || commandCtx?.sessionId
+          || commandCtx?.session?.id
           || null;
         const live = sid ? readService(scope, 'sessions')?.get?.(sid) : null;
-        if (live) engine.foldSession(sid, live);
+        if (live) engine.readState(sid, live, '0');
         engine.triggerRum(sid);
         return { kind: 'success' };
       };
@@ -189,7 +191,7 @@ export function apply(ctx, config = {}) {
     const offVolatile = scope.on?.('loader/volatile-update', installCommand);
     const offDoc = scope.on?.('settings/document-updated', (ns) => {
       const id = String(ns);
-      if (id === 'dsh-crew-morale' || id === 'crew-morale' || id === 'locale') installCommand();
+      if (id === 'dsh-crew-morale' || id === 'locale') installCommand();
     });
     installCommand();
 
@@ -201,7 +203,7 @@ export function apply(ctx, config = {}) {
   }, 'dsh-crew-morale: /rum command'));
 
   ctx.inject(['webServer'], (scope) => scope.effect(() => {
-    return scope.webServer.register({
+    const unregister = scope.webServer.register({
       kind: 'prefix',
       path: ROUTE,
       handler: (req, res) => {
@@ -224,7 +226,6 @@ export function apply(ctx, config = {}) {
           return;
         }
         const sessionId = url.searchParams.get('sessionId');
-        if (sessionId) lastPolledSessionId = sessionId;
         const since = url.searchParams.get('since') ?? '0';
         const live = sessionId ? readService(scope, 'sessions')?.get?.(sessionId) : null;
         const payload = engine.readState(sessionId, live, since);
@@ -238,5 +239,8 @@ export function apply(ctx, config = {}) {
         res.end(req.method === 'HEAD' ? undefined : body);
       },
     });
+    return () => {
+      unregister();
+    };
   }, 'dsh-crew-morale: state route'));
 }

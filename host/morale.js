@@ -68,6 +68,53 @@ export function createMoraleEngine(initialConfig = {}) {
     return Math.max(0, score);
   }
 
+  function applyEventToEntry(entry, event, now) {
+    const type = event?.type;
+    const at = typeof event?.time === 'number' && Number.isFinite(event.time) ? event.time : now;
+    if (type === 'turn/start') {
+      entry.turnOpen = true;
+      if (entry.pendingNotice) {
+        if (at + NOTICE_TTL_MS >= now) {
+          entry.activeNotice = {
+            id: noticeSeq++,
+            kind: entry.pendingNotice.kind,
+            at,
+            expiresAt: at + NOTICE_TTL_MS,
+          };
+        }
+        entry.pendingNotice = null;
+      }
+    } else if (type === 'llm/retry-started') {
+      entry.score = clampScore(entry.score + cfg.retryDelta);
+      if (at + NOTICE_TTL_MS >= now) {
+        entry.activeNotice = {
+          id: noticeSeq++,
+          kind: 'retry',
+          at,
+          expiresAt: at + NOTICE_TTL_MS,
+        };
+      }
+    } else if (type === 'turn/end') {
+      entry.turnOpen = false;
+      const kind = event.data?.reason?.kind;
+      if (kind === 'error' || kind === 'max-tokens') {
+        entry.score = clampScore(entry.score + cfg.failedDelta);
+        entry.pendingNotice = { kind: 'failed' };
+      } else if (kind === 'aborted' || kind === 'interrupted') {
+        entry.score = clampScore(entry.score + cfg.cancelledDelta);
+        entry.pendingNotice = { kind: 'cancelled' };
+      }
+    }
+  }
+
+  function applyEvent(sessionId, event, now = Date.now()) {
+    if (!sessionId || !event) return;
+    const entry = sessions.get(sessionId);
+    if (!entry) return;
+    applyEventToEntry(entry, event, now);
+    entry.live = true;
+  }
+
   function foldSession(sessionId, session, now = Date.now()) {
     if (!sessionId || !session) return null;
     const entry = ensureEntry(sessionId);
@@ -90,39 +137,8 @@ export function createMoraleEngine(initialConfig = {}) {
     for (let seq = entry.foldedThrough + 1; seq < end; seq += 1) {
       const event = eventAtOf(session, seq);
       if (!event) continue;
-      const type = event.type;
-      const at = typeof event.time === 'number' && Number.isFinite(event.time) ? event.time : now;
 
-      if (type === 'turn/start') {
-        entry.turnOpen = true;
-        if (entry.pendingNotice) {
-          entry.activeNotice = {
-            id: noticeSeq++,
-            kind: entry.pendingNotice.kind,
-            at: now,
-            expiresAt: now + NOTICE_TTL_MS,
-          };
-          entry.pendingNotice = null;
-        }
-      } else if (type === 'llm/retry-started') {
-        entry.score = clampScore(entry.score + cfg.retryDelta);
-        entry.activeNotice = {
-          id: noticeSeq++,
-          kind: 'retry',
-          at,
-          expiresAt: now + NOTICE_TTL_MS,
-        };
-      } else if (type === 'turn/end') {
-        entry.turnOpen = false;
-        const kind = event.data?.reason?.kind;
-        if (kind === 'error' || kind === 'max-tokens') {
-          entry.score = clampScore(entry.score + cfg.failedDelta);
-          entry.pendingNotice = { kind: 'failed' };
-        } else if (kind === 'aborted' || kind === 'interrupted') {
-          entry.score = clampScore(entry.score + cfg.cancelledDelta);
-          entry.pendingNotice = { kind: 'cancelled' };
-        }
-      }
+      applyEventToEntry(entry, event, now);
       entry.foldedThrough = seq;
     }
     return entry;
@@ -153,7 +169,12 @@ export function createMoraleEngine(initialConfig = {}) {
   function readState(sessionId, session = null, sinceConfettiId = 0, now = Date.now()) {
     let entry = null;
     if (sessionId) {
-      entry = session ? foldSession(sessionId, session, now) : ensureEntry(sessionId);
+      const existing = sessions.get(sessionId);
+      if (session && existing?.live) {
+        entry = existing;
+      } else {
+        entry = session ? foldSession(sessionId, session, now) : ensureEntry(sessionId);
+      }
     }
     if (entry?.activeNotice && entry.activeNotice.expiresAt <= now) {
       entry.activeNotice = null;
@@ -180,6 +201,7 @@ export function createMoraleEngine(initialConfig = {}) {
 
   return {
     setConfig,
+    applyEvent,
     foldSession,
     triggerRum,
     readState,

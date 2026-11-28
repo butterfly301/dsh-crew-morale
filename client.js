@@ -48,7 +48,7 @@ window.__ModuleLoader__.load({
         const byId = sessions?.list?.getSnapshot?.()?.byId;
         if (!byId || typeof byId !== 'object') return null;
         const selected = Object.values(byId).filter((s) => s && s.retainedBy?.mainView > 0);
-        return selected.length === 1 ? selected[0].id : null;
+        return selected[0]?.id ?? null;
       } catch {
         return null;
       }
@@ -145,17 +145,29 @@ window.__ModuleLoader__.load({
             }
           };
 
+          let pollSeq = 0;
+          let pollController = null;
           const poll = () => {
             if (disposed || !currentPack || typeof fetch !== 'function') return;
+            pollController?.abort();
+            const seq = ++pollSeq;
+            const controller = typeof AbortController === 'function' ? new AbortController() : null;
+            pollController = controller;
             const params = new URLSearchParams();
             if (activeSessionId) params.set('sessionId', activeSessionId);
             params.set('since', confettiCursor === null ? '999999999' : String(confettiCursor));
-            fetch(`${STATE_ROUTE}?${params.toString()}`, { cache: 'no-store' })
+            fetch(`${STATE_ROUTE}?${params.toString()}`, {
+              cache: 'no-store',
+              ...(controller ? { signal: controller.signal } : {}),
+            })
               .then((res) => (res && res.ok ? res.json() : null))
               .then((payload) => {
-                if (!disposed && payload) applyServerState(payload);
+                if (!disposed && seq === pollSeq && payload) applyServerState(payload);
               })
-              .catch(() => {});
+              .catch(() => {})
+              .finally(() => {
+                if (pollController === controller) pollController = null;
+              });
           };
 
           let stopSessions;
@@ -187,6 +199,8 @@ window.__ModuleLoader__.load({
 
           return () => {
             disposed = true;
+            pollController?.abort();
+            pollController = null;
             clearInterval(timer);
             try { stopSessions?.(); } catch {}
             try { unsubForm(); } catch {}
